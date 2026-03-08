@@ -1,0 +1,17 @@
+{
+  "name": "BodyComp Tracker",
+  "short_name": "BodyComp",
+  "description": "Track your body composition data in Google Sheets.",
+  "start_url": "/bodycomposition/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#4F46E5",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
