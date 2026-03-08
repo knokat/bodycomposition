@@ -1,0 +1,5 @@
+{
+  "name": "BodyComp Tracker",
+  "description": "Track daily weight, body fat, and muscle mass with visual charts and Google Sheets export.",
+  "requestFramePermissions": []
+}
