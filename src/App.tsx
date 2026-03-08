@@ -28,6 +28,7 @@ import {
   LogOut,
   Settings,
   FileSpreadsheet,
+  Calendar,
 } from "lucide-react";
 import { format, parseISO, subDays, isAfter } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
@@ -412,13 +413,16 @@ export default function App() {
                 <form onSubmit={handleAddEntry} className="space-y-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Datum</label>
-                    <input
-                      type="date"
-                      value={formData.date}
-                      onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
-                      required
-                    />
+                    <div className="relative">
+                      <input
+                        type="date"
+                        value={formData.date}
+                        onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                        className="w-full pl-4 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px] min-w-0"
+                        required
+                      />
+                      <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Gewicht (kg)</label>
@@ -427,7 +431,7 @@ export default function App() {
                       step="0.1"
                       value={formData.weight}
                       onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
                       required
                     />
                   </div>
@@ -439,7 +443,7 @@ export default function App() {
                         step="0.1"
                         value={formData.body_fat}
                         onChange={(e) => setFormData({ ...formData, body_fat: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
                         required
                       />
                     </div>
@@ -450,7 +454,7 @@ export default function App() {
                         step="0.1"
                         value={formData.muscle_mass_percent}
                         onChange={(e) => setFormData({ ...formData, muscle_mass_percent: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
                         required
                       />
                     </div>
