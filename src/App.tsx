@@ -46,6 +46,7 @@ interface Entry {
   muscle_mass_percent: number;
   fat_mass_kg: number;
   muscle_mass_kg: number;
+  cycle_day?: number;
 }
 
 // --- Constants ---
@@ -60,6 +61,7 @@ export default function App() {
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(localStorage.getItem("bodycomp_sheet_id"));
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
   const [timeRange, setTimeRange] = useState<"7d" | "30d" | "3m" | "all">("7d");
+  const [lastCycleStart, setLastCycleStart] = useState<string | null>(localStorage.getItem("last_cycle_start"));
 
   // Form state
   const [formData, setFormData] = useState({
@@ -67,7 +69,21 @@ export default function App() {
     weight: "",
     body_fat: "",
     muscle_mass_percent: "",
+    cycleDay: "",
   });
+
+  // Auto-calculate cycle day when date or lastCycleStart changes
+  useEffect(() => {
+    if (lastCycleStart) {
+      const start = parseISO(lastCycleStart);
+      const current = parseISO(formData.date);
+      const diffTime = current.getTime() - start.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1;
+      if (diffDays > 0) {
+        setFormData(prev => ({ ...prev, cycleDay: diffDays.toString() }));
+      }
+    }
+  }, [formData.date, lastCycleStart]);
 
   // --- Google API Initialization ---
   useEffect(() => {
@@ -95,7 +111,7 @@ export default function App() {
       gapi.client.setToken({ access_token: token });
       const response = await gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: sheetId,
-        range: "Sheet1!A:D",
+        range: "Sheet1!A:E",
       });
 
       const rows = response.result.values;
@@ -104,6 +120,7 @@ export default function App() {
           const weight = parseFloat(row[1]);
           const bodyFat = parseFloat(row[2]);
           const musclePercent = parseFloat(row[3]);
+          const cycleDay = row[4] ? parseInt(row[4]) : undefined;
           return {
             date: row[0],
             weight,
@@ -111,6 +128,7 @@ export default function App() {
             muscle_mass_percent: musclePercent,
             fat_mass_kg: (weight * bodyFat) / 100,
             muscle_mass_kg: (weight * musclePercent) / 100,
+            cycle_day: cycleDay,
           };
         }).sort((a: Entry, b: Entry) => b.date.localeCompare(a.date));
         setEntries(data);
@@ -179,7 +197,7 @@ export default function App() {
         range: "Sheet1!A1",
         valueInputOption: "RAW",
         resource: {
-          values: [["Date", "Weight (kg)", "Body Fat (%)", "Muscle (%)"]],
+          values: [["Date", "Weight (kg)", "Body Fat (%)", "Muscle (%)", "Cycle Day"]],
         },
       });
 
@@ -210,9 +228,23 @@ export default function App() {
         range: "Sheet1!A1",
         valueInputOption: "RAW",
         resource: {
-          values: [[formData.date, formData.weight, formData.body_fat, formData.muscle_mass_percent]],
+          values: [[formData.date, formData.weight, formData.body_fat, formData.muscle_mass_percent, formData.cycleDay]],
         },
       });
+
+      // If cycle day was set to 1, update the lastCycleStart anchor
+      if (formData.cycleDay === "1") {
+        localStorage.setItem("last_cycle_start", formData.date);
+        setLastCycleStart(formData.date);
+      } else if (formData.cycleDay !== "" && !lastCycleStart) {
+        // If user manually enters a day and we have no anchor, calculate a likely anchor
+        const day = parseInt(formData.cycleDay);
+        if (!isNaN(day)) {
+          const anchor = format(subDays(parseISO(formData.date), day - 1), "yyyy-MM-dd");
+          localStorage.setItem("last_cycle_start", anchor);
+          setLastCycleStart(anchor);
+        }
+      }
 
       fetchEntries(spreadsheetId, accessToken);
       setFormData({ ...formData, weight: "", body_fat: "", muscle_mass_percent: "" });
@@ -424,16 +456,53 @@ export default function App() {
                       <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Gewicht (kg)</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={formData.weight}
-                      onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
-                      required
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Gewicht (kg)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={formData.weight}
+                        onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Zyklustag</label>
+                      <input
+                        type="number"
+                        value={formData.cycleDay}
+                        onChange={(e) => setFormData({ ...formData, cycleDay: e.target.value })}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
+                        placeholder="Tag"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormData(prev => ({ ...prev, cycleDay: "1" }));
+                        localStorage.setItem("last_cycle_start", formData.date);
+                        setLastCycleStart(formData.date);
+                      }}
+                      className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-100 transition-colors border border-red-100"
+                    >
+                      🔴 Tag 1 (Heute)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
+                        setFormData(prev => ({ ...prev, date: yesterday, cycleDay: "1" }));
+                        localStorage.setItem("last_cycle_start", yesterday);
+                        setLastCycleStart(yesterday);
+                      }}
+                      className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-100 transition-colors border border-red-100"
+                    >
+                      ⭕ Tag 1 (Gestern)
+                    </button>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -517,6 +586,7 @@ export default function App() {
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200">
                         <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Datum</th>
+                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tag</th>
                         <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Fett kg</th>
                         <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Muskel kg</th>
                       </tr>
@@ -525,13 +595,14 @@ export default function App() {
                       {(activeTab === "table" ? entries : entries.slice(0, 7)).map((entry, idx) => (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
                           <td className="px-6 py-3 text-sm font-medium text-slate-900">{format(parseISO(entry.date), "dd.MM.yy")}</td>
+                          <td className="px-6 py-3 text-sm text-slate-400 font-medium">{entry.cycle_day || "-"}</td>
                           <td className="px-6 py-3 text-sm text-red-600 font-medium">{entry.fat_mass_kg.toFixed(1)}</td>
                           <td className="px-6 py-3 text-sm text-emerald-600 font-medium">{entry.muscle_mass_kg.toFixed(1)}</td>
                         </tr>
                       ))}
                       {entries.length === 0 && (
                         <tr>
-                          <td colSpan={3} className="px-6 py-8 text-center text-slate-400 italic text-sm">Noch keine Daten vorhanden</td>
+                          <td colSpan={4} className="px-6 py-8 text-center text-slate-400 italic text-sm">Noch keine Daten vorhanden</td>
                         </tr>
                       )}
                     </tbody>
