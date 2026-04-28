@@ -221,14 +221,19 @@ export default function App() {
       // @ts-ignore
       gapi.client.setToken({ access_token: accessToken });
       
+      const weightNum = parseFloat(formData.weight.replace(',', '.'));
+      const fatNum = parseFloat(formData.body_fat.replace(',', '.'));
+      const muscleNum = parseFloat(formData.muscle_mass_percent.replace(',', '.'));
+      const cycleDayNum = formData.cycleDay ? parseInt(formData.cycleDay) : null;
+
       // Check if date already exists to update instead of append (simplified: always append for now or handle logic)
       // For simplicity in this demo, we append. A real app would search and update.
       await gapi.client.sheets.spreadsheets.values.append({
         spreadsheetId,
         range: "Sheet1!A1",
-        valueInputOption: "RAW",
+        valueInputOption: "USER_ENTERED",
         resource: {
-          values: [[formData.date, formData.weight, formData.body_fat, formData.muscle_mass_percent, formData.cycleDay]],
+          values: [[formData.date, weightNum, fatNum, muscleNum, cycleDayNum]],
         },
       });
 
