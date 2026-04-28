@@ -29,6 +29,8 @@ import {
   Settings,
   FileSpreadsheet,
   Calendar,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { format, parseISO, subDays, isAfter } from "date-fns";
 import { clsx, type ClassValue } from "clsx";
@@ -60,7 +62,10 @@ export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(localStorage.getItem("google_access_token"));
   const [spreadsheetId, setSpreadsheetId] = useState<string | null>(localStorage.getItem("bodycomp_sheet_id"));
   const [isGapiLoaded, setIsGapiLoaded] = useState(false);
-  const [timeRange, setTimeRange] = useState<"7d" | "30d" | "3m" | "all">("7d");
+  const [timeRange, setTimeRange] = useState<"7d" | "30d" | "3m" | "all" | "since">("7d");
+  const [isTimeRangeModalOpen, setIsTimeRangeModalOpen] = useState(false);
+  const [referenceDate, setReferenceDate] = useState<string>(format(new Date(), "yyyy-MM-dd"));
+  const [sinceDate, setSinceDate] = useState<string>("");
   const [lastCycleStart, setLastCycleStart] = useState<string | null>(localStorage.getItem("last_cycle_start"));
 
   // Form state
@@ -117,20 +122,32 @@ export default function App() {
       const rows = response.result.values;
       if (rows && rows.length > 1) {
         const data = rows.slice(1).map((row: any) => {
-          const weight = parseFloat(row[1]);
-          const bodyFat = parseFloat(row[2]);
-          const musclePercent = parseFloat(row[3]);
+          const weight = parseFloat(String(row[1]).replace(',', '.'));
+          const bodyFat = parseFloat(String(row[2]).replace(',', '.'));
+          const musclePercent = parseFloat(String(row[3]).replace(',', '.'));
           const cycleDay = row[4] ? parseInt(row[4]) : undefined;
+          
+          // Robust date parsing for YYYY-MM-DD or DD.MM.YYYY
+          let dateStr = String(row[0]);
+          let parsedDate: Date;
+          if (dateStr.includes('.') && !dateStr.includes('-')) {
+            const [d, m, y] = dateStr.split('.');
+            parsedDate = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+          } else {
+            parsedDate = parseISO(dateStr);
+          }
+
           return {
-            date: row[0],
+            date: dateStr,
             weight,
             body_fat: bodyFat,
             muscle_mass_percent: musclePercent,
             fat_mass_kg: (weight * bodyFat) / 100,
             muscle_mass_kg: (weight * musclePercent) / 100,
             cycle_day: cycleDay,
+            _parsedDate: parsedDate,
           };
-        }).sort((a: Entry, b: Entry) => b.date.localeCompare(a.date));
+        }).sort((a: any, b: any) => b._parsedDate.getTime() - a._parsedDate.getTime());
         setEntries(data);
       } else {
         setEntries([]);
@@ -168,6 +185,14 @@ export default function App() {
     setAccessToken(null);
     localStorage.removeItem("google_access_token");
     setEntries([]);
+  };
+
+  const handleSetTimeRange = (range: "7d" | "30d" | "3m" | "all" | "since") => {
+    setTimeRange(range);
+    setReferenceDate(format(new Date(), "yyyy-MM-dd"));
+    if (range !== "since") {
+      setIsTimeRangeModalOpen(false);
+    }
   };
 
   const handleSetSheetId = () => {
@@ -226,8 +251,6 @@ export default function App() {
       const muscleNum = parseFloat(formData.muscle_mass_percent.replace(',', '.'));
       const cycleDayNum = formData.cycleDay ? parseInt(formData.cycleDay) : null;
 
-      // Check if date already exists to update instead of append (simplified: always append for now or handle logic)
-      // For simplicity in this demo, we append. A real app would search and update.
       await gapi.client.sheets.spreadsheets.values.append({
         spreadsheetId,
         range: "Sheet1!A1",
@@ -237,12 +260,10 @@ export default function App() {
         },
       });
 
-      // If cycle day was set to 1, update the lastCycleStart anchor
       if (formData.cycleDay === "1") {
         localStorage.setItem("last_cycle_start", formData.date);
         setLastCycleStart(formData.date);
       } else if (formData.cycleDay !== "" && !lastCycleStart) {
-        // If user manually enters a day and we have no anchor, calculate a likely anchor
         const day = parseInt(formData.cycleDay);
         if (!isNaN(day)) {
           const anchor = format(subDays(parseISO(formData.date), day - 1), "yyyy-MM-dd");
@@ -262,20 +283,46 @@ export default function App() {
 
   // --- Computed Data ---
   const chartData = useMemo(() => {
-    const now = new Date();
-    let filteredEntries = [...entries];
+    const parseEntryDate = (dateStr: string) => {
+      if (dateStr.includes('.') && !dateStr.includes('-')) {
+        const [d, m, y] = dateStr.split('.');
+        return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
+      }
+      return parseISO(dateStr);
+    };
 
-    if (timeRange === "7d") {
-      filteredEntries = entries.filter(e => isAfter(parseISO(e.date), subDays(now, 7)));
+    let filteredEntries = [...entries];
+    const refDate = parseISO(referenceDate);
+
+    if (timeRange === "since" && sinceDate) {
+      const sDate = parseISO(sinceDate);
+      filteredEntries = entries.filter(e => {
+        const d = parseEntryDate(e.date);
+        return !isAfter(sDate, d);
+      });
+    } else if (timeRange === "7d") {
+      const start = subDays(refDate, 7);
+      filteredEntries = entries.filter(e => {
+        const d = parseEntryDate(e.date);
+        return !isAfter(d, refDate) && !isAfter(start, d);
+      });
     } else if (timeRange === "30d") {
-      filteredEntries = entries.filter(e => isAfter(parseISO(e.date), subDays(now, 30)));
+      const start = subDays(refDate, 30);
+      filteredEntries = entries.filter(e => {
+        const d = parseEntryDate(e.date);
+        return !isAfter(d, refDate) && !isAfter(start, d);
+      });
     } else if (timeRange === "3m") {
-      filteredEntries = entries.filter(e => isAfter(parseISO(e.date), subDays(now, 90)));
+      const start = subDays(refDate, 90);
+      filteredEntries = entries.filter(e => {
+        const d = parseEntryDate(e.date);
+        return !isAfter(d, refDate) && !isAfter(start, d);
+      });
     }
 
     const baseData = filteredEntries.reverse().map((e) => ({
       ...e,
-      formattedDate: format(parseISO(e.date), "dd.MM."),
+      formattedDate: format(parseEntryDate(e.date), "dd.MM."),
     }));
 
     if (baseData.length < 2) return baseData;
@@ -307,11 +354,10 @@ export default function App() {
     });
 
     return enrichedData;
-  }, [entries, timeRange]);
+  }, [entries, timeRange, referenceDate, sinceDate]);
 
   const latestEntry = entries[0];
 
-  // --- Render Helpers ---
   const CustomTooltip = ({ active, payload, label, unit }: any) => {
     if (active && payload && payload.length) {
       const dataPoint = payload.find((p: any) => p.name !== "Trend");
@@ -328,47 +374,145 @@ export default function App() {
     return null;
   };
 
-  const renderChart = (title: string, dataKey: string, color: string, unit: string, type: "area" | "line" = "line") => (
-    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-      <h3 className="font-semibold text-slate-900 mb-6 flex items-center gap-2">
-        {unit === "kg" ? <Scale className="w-5 h-5 text-indigo-600" /> : <BarChart3 className="w-5 h-5 text-indigo-600" />}
-        {title} ({unit})
-      </h3>
-      <div className="h-[250px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          {type === "area" ? (
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id={`color${dataKey}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={color} stopOpacity={0.1} />
-                  <stop offset="95%" stopColor={color} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="formattedDate" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "#64748b" }} />
-              <YAxis hide domain={["auto", "auto"]} />
-              <Tooltip content={<CustomTooltip unit={unit} />} />
-              <Area name={title} type="monotone" dataKey={dataKey} stroke={color} strokeWidth={3} fillOpacity={1} fill={`url(#color${dataKey})`} />
-              <Line name="Trend" type="monotone" dataKey={`${dataKey}_trend`} stroke={color} strokeWidth={2} strokeDasharray="5 5" dot={false} activeDot={false} />
-            </AreaChart>
-          ) : (
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="formattedDate" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: "#64748b" }} />
-              <YAxis hide domain={["auto", "auto"]} />
-              <Tooltip content={<CustomTooltip unit={unit} />} />
-              <Line name={title} type="monotone" dataKey={dataKey} stroke={color} strokeWidth={3} dot={{ r: 4, fill: color, strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-              <Line name="Trend" type="monotone" dataKey={`${dataKey}_trend`} stroke={color} strokeWidth={2} strokeDasharray="5 5" dot={false} activeDot={false} />
-            </LineChart>
+  const renderChart = (title: string, dataKey: string, color: string, unit: string, type: "area" | "line" = "line") => {
+    const { ticks, domain } = useMemo(() => {
+      const step = 0.2;
+      let start: number;
+      let end: number;
+
+      if (dataKey === "fat_mass_kg" || dataKey === "muscle_mass_kg") {
+        start = 20.8;
+        end = 23.4;
+      } else if (dataKey === "weight") {
+        start = 69.0;
+        end = 71.6;
+      } else {
+        const values = chartData.map(d => d[dataKey as keyof typeof d] as number).filter(v => typeof v === 'number');
+        const trendValues = chartData.map(d => d[`${dataKey}_trend` as keyof typeof d] as number).filter(v => typeof v === 'number');
+        const allValues = [...values, ...trendValues];
+        if (allValues.length === 0) return { ticks: [], domain: ["auto", "auto"] };
+        const minVal = Math.min(...allValues);
+        const maxVal = Math.max(...allValues);
+        const FIXED_SPAN = 5.0;
+        const actualRange = maxVal - minVal;
+        const span = Math.max(actualRange + 0.4, FIXED_SPAN);
+        const mid = (minVal + maxVal) / 2;
+        start = Math.floor((mid - span / 2) / step) * step;
+        end = start + span;
+      }
+      
+      const generatedTicks = [];
+      for (let t = start; t <= end + 0.01; t = Number((t + step).toFixed(1))) {
+        generatedTicks.push(t);
+      }
+      return { ticks: generatedTicks, domain: [start, end] };
+    }, [chartData, dataKey]);
+
+    const trendSummary = useMemo(() => {
+      if (chartData.length < 2) return null;
+      const trendKey = `${dataKey}_trend`;
+      const startValue = chartData[0][trendKey as keyof typeof chartData[0]] as number;
+      const endValue = chartData[chartData.length - 1][trendKey as keyof typeof chartData[0]] as number;
+      if (typeof startValue !== 'number' || typeof endValue !== 'number') return null;
+      const diff = endValue - startValue;
+      let isPositiveChange = false;
+      if (dataKey === "muscle_mass_kg" || dataKey === "muscle_mass_percent") {
+        isPositiveChange = diff > 0;
+      } else {
+        isPositiveChange = diff < 0;
+      }
+      return {
+        start: startValue.toFixed(1),
+        end: endValue.toFixed(1),
+        diff: diff.toFixed(1),
+        isPositiveChange,
+        diffRaw: diff
+      };
+    }, [chartData, dataKey]);
+
+    return (
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <h3 className="font-semibold text-slate-900 flex items-center gap-2">
+            {unit === "kg" ? <Scale className="w-5 h-5 text-indigo-600" /> : <BarChart3 className="w-5 h-5 text-indigo-600" />}
+            {title} ({unit})
+          </h3>
+          {trendSummary && (
+            <div className="flex items-center gap-3 bg-slate-50 px-4 py-1.5 rounded-xl border border-slate-100 mr-1 sm:mr-0">
+              <div className="flex flex-col">
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Start</span>
+                <span className="text-xs font-bold text-slate-600">{trendSummary.start}</span>
+              </div>
+              <div className="w-px h-6 bg-slate-200" />
+              <div className="flex flex-col">
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Ende</span>
+                <span className="text-xs font-bold text-slate-600">{trendSummary.end}</span>
+              </div>
+              <div className="w-px h-6 bg-slate-200" />
+              <div className="flex flex-col items-end">
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Differenz</span>
+                <span className={cn(
+                  "text-xs font-black",
+                  trendSummary.diffRaw === 0 ? "text-slate-400" :
+                  trendSummary.isPositiveChange ? "text-emerald-600" : "text-red-500"
+                )}>
+                  {trendSummary.diffRaw > 0 ? "+" : ""}{trendSummary.diff}
+                </span>
+              </div>
+            </div>
           )}
-        </ResponsiveContainer>
+        </div>
+        <div className="h-[250px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            {type === "area" ? (
+              <AreaChart data={chartData} margin={{ left: -15, right: 5, top: 10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id={`color${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={color} stopOpacity={0.1} />
+                    <stop offset="95%" stopColor={color} stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="formattedDate" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#64748b" }} />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: "#64748b" }} 
+                  domain={domain}
+                  ticks={ticks}
+                  width={45}
+                  tickFormatter={(val) => val.toFixed(1)}
+                />
+                <Tooltip content={<CustomTooltip unit={unit} />} />
+                <Area name={title} type="monotone" dataKey={dataKey} stroke={color} strokeWidth={3} fillOpacity={1} fill={`url(#color${dataKey})`} />
+                <Line name="Trend" type="monotone" dataKey={`${dataKey}_trend`} stroke={color} strokeWidth={2} strokeDasharray="5 5" dot={false} activeDot={false} />
+              </AreaChart>
+            ) : (
+              <LineChart data={chartData} margin={{ left: -15, right: 5, top: 10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                <XAxis dataKey="formattedDate" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#64748b" }} />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fontSize: 10, fill: "#64748b" }} 
+                  domain={domain}
+                  ticks={ticks}
+                  width={45}
+                  tickFormatter={(val) => val.toFixed(1)}
+                />
+                <Tooltip content={<CustomTooltip unit={unit} />} />
+                <Line name={title} type="monotone" dataKey={dataKey} stroke={color} strokeWidth={3} dot={{ r: 4, fill: color, strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
+                <Line name="Trend" type="monotone" dataKey={`${dataKey}_trend`} stroke={color} strokeWidth={2} strokeDasharray="5 5" dot={false} activeDot={false} />
+              </LineChart>
+            )}
+          </ResponsiveContainer>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-12">
-      {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -379,18 +523,13 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             {!accessToken ? (
-              <button
-                onClick={handleLogin}
-                className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 hover:bg-indigo-700 transition-all"
-              >
-                <LogIn className="w-4 h-4" />
-                Google Login
+              <button onClick={handleLogin} className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 hover:bg-indigo-700 transition-all">
+                <LogIn className="w-4 h-4" /> Google Login
               </button>
             ) : (
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2 text-emerald-600 text-sm font-medium">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Verbunden
+                  <CheckCircle2 className="w-4 h-4" /> Verbunden
                 </div>
                 <button onClick={handleLogout} className="text-slate-400 hover:text-slate-600">
                   <LogOut className="w-4 h-4" />
@@ -408,31 +547,18 @@ export default function App() {
               <FileSpreadsheet className="w-10 h-10 text-indigo-600" />
             </div>
             <h2 className="text-2xl font-bold text-slate-900 mb-2">Willkommen beim BodyComp Tracker</h2>
-            <p className="text-slate-500 max-w-md mx-auto mb-8">
-              Verwalte deine Fitness-Daten direkt in deiner eigenen Google Tabelle. Sicher, kostenlos und überall verfügbar.
-            </p>
-            <button
-              onClick={handleLogin}
-              className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-200 hover:scale-105 transition-transform"
-            >
-              Mit Google starten
-            </button>
+            <p className="text-slate-500 max-w-md mx-auto mb-8">Verwalte deine Fitness-Daten direkt in deiner eigenen Google Tabelle. Sicher, kostenlos und überall verfügbar.</p>
+            <button onClick={handleLogin} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-200 hover:scale-105 transition-transform">Mit Google starten</button>
           </div>
         ) : !spreadsheetId ? (
           <div className="max-w-2xl mx-auto text-center py-12">
             <h2 className="text-xl font-bold mb-6">Tabelle einrichten</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <button
-                onClick={handleCreateSheet}
-                className="p-8 bg-white border-2 border-dashed border-indigo-200 rounded-3xl hover:border-indigo-400 transition-all group"
-              >
+              <button onClick={handleCreateSheet} className="p-8 bg-white border-2 border-dashed border-indigo-200 rounded-3xl hover:border-indigo-400 transition-all group">
                 <Plus className="w-8 h-8 text-indigo-400 mx-auto mb-3 group-hover:scale-110 transition-transform" />
                 <span className="font-bold text-slate-900">Neue Tabelle erstellen</span>
               </button>
-              <button
-                onClick={handleSetSheetId}
-                className="p-8 bg-white border-2 border-dashed border-slate-200 rounded-3xl hover:border-slate-400 transition-all group"
-              >
+              <button onClick={handleSetSheetId} className="p-8 bg-white border-2 border-dashed border-slate-200 rounded-3xl hover:border-slate-400 transition-all group">
                 <Settings className="w-8 h-8 text-slate-400 mx-auto mb-3 group-hover:scale-110 transition-transform" />
                 <span className="font-bold text-slate-900">Bestehende ID verknüpfen</span>
               </button>
@@ -440,250 +566,165 @@ export default function App() {
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Left Column: Form */}
             <div className="lg:col-span-4 lg:sticky lg:top-24">
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                  <Plus className="w-5 h-5 text-indigo-600" />
-                  Neuer Eintrag
-                </h2>
+                <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-600" /> Neuer Eintrag</h2>
                 <form onSubmit={handleAddEntry} className="space-y-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Datum</label>
                     <div className="relative w-full">
-                      <input
-                        type="date"
-                        value={formData.date}
-                        onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                        className="w-full pl-4 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px] appearance-none"
-                        required
-                      />
+                      <input type="date" value={formData.date} onChange={(e) => setFormData({ ...formData, date: e.target.value })} className="w-full pl-4 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]" required />
                       <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Gewicht (kg)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formData.weight}
-                        onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
-                        required
-                      />
+                      <input type="number" step="0.1" value={formData.weight} onChange={(e) => setFormData({ ...formData, weight: e.target.value })} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]" required />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Zyklustag</label>
-                      <input
-                        type="number"
-                        value={formData.cycleDay}
-                        onChange={(e) => setFormData({ ...formData, cycleDay: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
-                        placeholder="Tag"
-                      />
+                      <input type="number" value={formData.cycleDay} onChange={(e) => setFormData({ ...formData, cycleDay: e.target.value })} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]" placeholder="Tag" />
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData(prev => ({ ...prev, cycleDay: "1" }));
-                        localStorage.setItem("last_cycle_start", formData.date);
-                        setLastCycleStart(formData.date);
-                      }}
-                      className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-100 transition-colors border border-red-100"
-                    >
-                      🔴 Tag 1 (Heute)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
-                        setFormData(prev => ({ ...prev, date: yesterday, cycleDay: "1" }));
-                        localStorage.setItem("last_cycle_start", yesterday);
-                        setLastCycleStart(yesterday);
-                      }}
-                      className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-red-100 transition-colors border border-red-100"
-                    >
-                      ⭕ Tag 1 (Gestern)
-                    </button>
+                    <button type="button" onClick={() => { setFormData(prev => ({ ...prev, cycleDay: "1" })); localStorage.setItem("last_cycle_start", formData.date); setLastCycleStart(formData.date); }} className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase hover:bg-red-100 transition-colors border border-red-100">🔴 Tag 1 (H)</button>
+                    <button type="button" onClick={() => { const yest = format(subDays(new Date(), 1), "yyyy-MM-dd"); setFormData(prev => ({ ...prev, date: yest, cycleDay: "1" })); localStorage.setItem("last_cycle_start", yest); setLastCycleStart(yest); }} className="flex-1 py-2 px-3 bg-red-50 text-red-600 rounded-lg text-[10px] font-bold uppercase hover:bg-red-100 transition-colors border border-red-100">⭕ Tag 1 (G)</button>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Fett (%)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formData.body_fat}
-                        onChange={(e) => setFormData({ ...formData, body_fat: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
-                        required
-                      />
+                      <input type="number" step="0.1" value={formData.body_fat} onChange={(e) => setFormData({ ...formData, body_fat: e.target.value })} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]" required />
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Muskeln (%)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={formData.muscle_mass_percent}
-                        onChange={(e) => setFormData({ ...formData, muscle_mass_percent: e.target.value })}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]"
-                        required
-                      />
+                      <input type="number" step="0.1" value={formData.muscle_mass_percent} onChange={(e) => setFormData({ ...formData, muscle_mass_percent: e.target.value })} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 min-h-[42px]" required />
                     </div>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
-                  >
-                    {loading ? "Speichert..." : "Eintrag speichern"}
-                  </button>
+                  <button type="submit" disabled={loading} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition-all shadow-lg disabled:opacity-50">{loading ? "Speichert..." : "Eintrag speichern"}</button>
                 </form>
               </div>
             </div>
 
-            {/* Right Column: Stats, Table & Charts */}
             <div className="lg:col-span-8 space-y-8">
-              {/* Quick Stats */}
               {latestEntry && (
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                    <div className="flex items-center gap-2 text-slate-500 mb-3">
-                      <Activity className="w-4 h-4 sm:w-5 sm:h-5" />
-                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">Fettmasse</span>
-                    </div>
-                    <div className="text-3xl sm:text-6xl font-bold text-slate-900 leading-none">
-                      {latestEntry.fat_mass_kg.toFixed(1)}
-                      <span className="text-sm sm:text-2xl font-normal text-slate-400 ml-1">kg</span>
-                    </div>
+                    <div className="flex items-center gap-2 text-slate-500 mb-3"><Activity className="w-4 h-4" /><span className="text-[10px] font-bold uppercase">Fettmasse</span></div>
+                    <div className="text-3xl sm:text-6xl font-bold text-slate-900">{latestEntry.fat_mass_kg.toFixed(1)}<span className="text-sm sm:text-2xl font-normal text-slate-400 ml-1">kg</span></div>
                   </div>
                   <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                    <div className="flex items-center gap-2 text-slate-500 mb-3">
-                      <Dumbbell className="w-4 h-4 sm:w-5 sm:h-5" />
-                      <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider">Muskelmasse</span>
-                    </div>
-                    <div className="text-3xl sm:text-6xl font-bold text-slate-900 leading-none">
-                      {latestEntry.muscle_mass_kg.toFixed(1)}
-                      <span className="text-sm sm:text-2xl font-normal text-slate-400 ml-1">kg</span>
-                    </div>
+                    <div className="flex items-center gap-2 text-slate-500 mb-3"><Dumbbell className="w-4 h-4" /><span className="text-[10px] font-bold uppercase">Muskelmasse</span></div>
+                    <div className="text-3xl sm:text-6xl font-bold text-slate-900">{latestEntry.muscle_mass_kg.toFixed(1)}<span className="text-sm sm:text-2xl font-normal text-slate-400 ml-1">kg</span></div>
                   </div>
                 </div>
               )}
 
-              {/* 7-Day History Table */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="font-bold text-slate-900 flex items-center gap-2">
-                    <TableIcon className="w-5 h-5 text-indigo-600" />
-                    Letzte 7 Einträge
-                  </h3>
-                  <button
-                    onClick={() => setActiveTab(activeTab === "table" ? "dashboard" : "table")}
-                    className="text-[10px] sm:text-xs font-bold text-indigo-600 hover:underline whitespace-nowrap"
-                  >
-                    {activeTab === "table" ? "Zurück" : "Alle zeigen"}
-                  </button>
+                  <h3 className="font-bold text-slate-900 flex items-center gap-2"><TableIcon className="w-5 h-5 text-indigo-600" /> Letzte Einträge</h3>
+                  <button onClick={() => setActiveTab(activeTab === "table" ? "dashboard" : "table")} className="text-xs font-bold text-indigo-600 hover:underline">{activeTab === "table" ? "Dashboard" : "Alle"}</button>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200">
-                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Datum</th>
-                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tag</th>
-                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Fett kg</th>
-                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Muskel kg</th>
+                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase">Datum</th>
+                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase">Tag</th>
+                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase">Fett kg</th>
+                        <th className="px-6 py-3 text-[10px] font-bold text-slate-500 uppercase">Muskel kg</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {(activeTab === "table" ? entries : entries.slice(0, 7)).map((entry, idx) => (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-6 py-3 text-sm font-medium text-slate-900">{format(parseISO(entry.date), "dd.MM.yy")}</td>
-                          <td className="px-6 py-3 text-sm text-slate-400 font-medium">{entry.cycle_day || "-"}</td>
+                          <td className="px-6 py-3 text-sm font-medium">{entry.date}</td>
+                          <td className="px-6 py-3 text-sm text-slate-400">{entry.cycle_day || "-"}</td>
                           <td className="px-6 py-3 text-sm text-red-600 font-medium">{entry.fat_mass_kg.toFixed(1)}</td>
                           <td className="px-6 py-3 text-sm text-emerald-600 font-medium">{entry.muscle_mass_kg.toFixed(1)}</td>
                         </tr>
                       ))}
-                      {entries.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="px-6 py-8 text-center text-slate-400 italic text-sm">Noch keine Daten vorhanden</td>
-                        </tr>
-                      )}
                     </tbody>
                   </table>
                 </div>
               </div>
 
-              {/* Dashboard Charts */}
               {activeTab === "dashboard" && (
                 <div className="space-y-6">
-                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-slate-900">
-                        <TrendingUp className="w-5 h-5 text-indigo-600" />
-                        <h3 className="font-bold">Zeitraum auswählen</h3>
-                      </div>
-                      <div className="flex bg-slate-100 p-1 rounded-xl w-full sm:w-fit">
-                        {[
-                          { id: "7d", label: "7 Tage" },
-                          { id: "30d", label: "30 Tage" },
-                          { id: "3m", label: "3 Monate" },
-                          { id: "all", label: "Alle" },
-                        ].map((range) => (
-                          <button
-                            key={range.id}
-                            onClick={() => setTimeRange(range.id as any)}
-                            className={cn(
-                              "flex-1 sm:flex-none px-4 py-2 rounded-lg text-xs font-bold transition-all",
-                              timeRange === range.id
-                                ? "bg-white text-indigo-600 shadow-sm"
-                                : "text-slate-500 hover:text-slate-700"
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm mb-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-center gap-2 text-slate-900"><TrendingUp className="w-5 h-5 text-indigo-600" /><h3 className="font-bold">Zeitraum</h3></div>
+                      <div className="hidden lg:flex items-center gap-4">
+                        <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
+                          {[{ id: "7d", label: "7T" }, { id: "30d", label: "30T" }, { id: "3m", label: "3M" }, { id: "since", label: "Ab..." }, { id: "all", label: "Alle" }].map(range => (
+                            <button key={range.id} onClick={() => handleSetTimeRange(range.id as any)} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-all", timeRange === range.id ? "bg-white text-indigo-600 shadow-sm" : "text-slate-500 hover:text-slate-700")}>{range.label}</button>
+                          ))}
+                        </div>
+                        {timeRange !== "all" && (
+                          <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
+                            {timeRange !== "since" ? (
+                              <><button onClick={() => { const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90; setReferenceDate(format(subDays(parseISO(referenceDate), days), "yyyy-MM-dd")); }} className="p-1.5 bg-slate-50 border rounded-lg text-slate-500"><ChevronLeft className="w-4 h-4" /></button>
+                              <span className="text-[10px] font-bold text-slate-500 uppercase min-w-[70px] text-center">Bis {format(parseISO(referenceDate), "dd.MM.")}</span>
+                              <button onClick={() => { const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90; const next = format(subDays(parseISO(referenceDate), -days), "yyyy-MM-dd"); const today = format(new Date(), "yyyy-MM-dd"); setReferenceDate(next > today ? today : next); }} disabled={referenceDate >= format(new Date(), "yyyy-MM-dd")} className="p-1.5 bg-slate-50 border rounded-lg text-slate-500 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button></>
+                            ) : (
+                              <input type="date" value={sinceDate} onChange={(e) => setSinceDate(e.target.value)} className="px-2 py-1 bg-slate-50 border rounded-lg text-[10px] font-bold" />
                             )}
-                          >
-                            {range.label}
-                          </button>
-                        ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="lg:hidden flex items-center justify-between w-full">
+                        <button onClick={() => setIsTimeRangeModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-xl text-xs font-bold text-slate-700">
+                          <Calendar className="w-4 h-4 text-indigo-600" /> {timeRange === "since" ? `Ab ${sinceDate ? format(parseISO(sinceDate), "dd.MM.yy") : "Datum"}` : timeRange === "all" ? "Alle" : `${timeRange === "7d" ? "7 Tage" : "30 Tage"}`}
+                        </button>
+                        {timeRange !== "all" && timeRange !== "since" && (
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => { const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90; setReferenceDate(format(subDays(parseISO(referenceDate), days), "yyyy-MM-dd")); }} className="p-2 bg-slate-50 border rounded-xl text-slate-500"><ChevronLeft className="w-4 h-4" /></button>
+                            <div className="text-[10px] font-bold text-slate-500 px-2">{format(parseISO(referenceDate), "dd.MM.")}</div>
+                            <button onClick={() => { const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90; const next = format(subDays(parseISO(referenceDate), -days), "yyyy-MM-dd"); const today = format(new Date(), "yyyy-MM-dd"); setReferenceDate(next > today ? today : next); }} disabled={referenceDate >= format(new Date(), "yyyy-MM-dd")} className="p-2 bg-slate-50 border rounded-xl text-slate-500 disabled:opacity-30"><ChevronRight className="w-4 h-4" /></button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
+
+                  {isTimeRangeModalOpen && (
+                    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                      <div className="bg-white w-full max-w-sm rounded-[32px] sm:rounded-3xl shadow-2xl p-6">
+                        <div className="flex items-center justify-between mb-6"><h4 className="text-lg font-bold">Zeitraum wählen</h4><button onClick={() => setIsTimeRangeModalOpen(false)}>✕</button></div>
+                        <div className="space-y-3">
+                          {[{ id: "7d", label: "Letzte 7 Tage", icon: "🗓️" }, { id: "30d", label: "Letzte 30 Tage", icon: "📊" }, { id: "3m", label: "Letzte 3 Monate", icon: "📈" }, { id: "all", label: "Gesamter Zeitraum", icon: "🌎" }, { id: "since", label: "Ab Datum", icon: "📅" }].map(range => (
+                            <button key={range.id} onClick={() => handleSetTimeRange(range.id as any)} className={cn("w-full flex items-center justify-between p-4 rounded-2xl border-2 transition-all", timeRange === range.id ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-slate-50 border-transparent text-slate-600")}>
+                              <span className="flex items-center gap-3 font-bold"><span>{range.icon}</span>{range.label}</span>
+                              {timeRange === range.id && <CheckCircle2 className="w-5 h-5" />}
+                            </button>
+                          ))}
+                          {timeRange === "since" && (<div className="p-4 bg-indigo-50 rounded-2xl border-2 border-indigo-100 mt-2"><label className="block text-[10px] font-bold text-indigo-400 uppercase mb-2">Startdatum</label><input type="date" value={sinceDate} onChange={(e) => setSinceDate(e.target.value)} className="w-full px-4 py-2 bg-white rounded-xl text-sm font-bold" /></div>)}
+                        </div>
+                        <button onClick={() => setIsTimeRangeModalOpen(false)} className="w-full mt-6 bg-indigo-600 text-white font-bold py-4 rounded-2xl">Fertig</button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {renderChart("Fettmasse", "fat_mass_kg", "#ef4444", "kg")}
-                    {renderChart("Muskelmasse", "muscle_mass_kg", "#10b981", "kg")}
+                    {renderChart("Fett", "fat_mass_kg", "#ef4444", "kg")}
+                    {renderChart("Muskeln", "muscle_mass_kg", "#10b981", "kg")}
                   </div>
                   <div className="grid grid-cols-1 gap-6">
-                    {renderChart("Gewichtsverlauf", "weight", "#4f46e5", "kg", "area")}
+                    {renderChart("Gewicht", "weight", "#4f46e5", "kg", "area")}
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {renderChart("Körperfett", "body_fat", "#f59e0b", "%")}
+                    {renderChart("Fettanteil", "body_fat", "#f59e0b", "%")}
                     {renderChart("Muskelanteil", "muscle_mass_percent", "#06b6d4", "%")}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Bottom: Config (appears last on mobile, sidebar bottom on desktop) */}
             <div className="lg:col-span-4 lg:col-start-1">
               <div className="bg-slate-800 text-white p-6 rounded-2xl shadow-xl">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-bold flex items-center gap-2">
-                    <Settings className="w-4 h-4" />
-                    Konfiguration
-                  </h3>
-                </div>
-                <div className="text-xs text-slate-400 mb-4 break-all">
-                  <span className="block font-bold text-slate-300 uppercase mb-1">Spreadsheet ID:</span>
-                  {spreadsheetId}
-                </div>
-                <button
-                  onClick={() => {
-                    localStorage.removeItem("bodycomp_sheet_id");
-                    setSpreadsheetId(null);
-                  }}
-                  className="text-xs text-red-400 hover:text-red-300 font-bold"
-                >
-                  Verknüpfung lösen
-                </button>
+                <h3 className="font-bold flex items-center gap-2 mb-4"><Settings className="w-4 h-4" />Konfiguration</h3>
+                <div className="text-xs text-slate-400 mb-4 break-all"><span className="block font-bold text-slate-300 uppercase mb-1">Spreadsheet ID:</span>{spreadsheetId}</div>
+                <button onClick={() => { localStorage.removeItem("bodycomp_sheet_id"); setSpreadsheetId(null); }} className="text-xs text-red-400 font-bold">Verknüpfung lösen</button>
               </div>
             </div>
           </div>
